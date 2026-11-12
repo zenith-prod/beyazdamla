@@ -273,11 +273,11 @@ details ul{margin:10px 0 0;padding-left:18px;line-height:1.6}
 
 <script>
 const prizes = [
-  {label:"Çay",                      lines:["Çay"],                weight:35, fill:["#d9a640","#b8862b"], text:"#fff",    emoji:"🫖"},
+  {label:"Çay",                      lines:["Çay"],                weight:45, fill:["#d9a640","#b8862b"], text:"#fff",    emoji:"🫖"},
   {label:"Bedava Türk Kahvesi",      lines:["Türk","Kahvesi"],     weight:30, fill:["#f6e7c4","#ead39d"], text:"#6b4714", emoji:"☕"},
   {label:"Tüm Masa İkram",          lines:["Tüm Masa","İkram"],  weight:1,  fill:["#e0393e","#a3161c"], text:"#fff",    emoji:"🎁"},
-  {label:"Bedava Sade Kazandibi",    lines:["Sade","Kazandibi"],   weight:7, fill:["#ffffff","#f4ecdc"], text:"#7a531a", emoji:"🍮"},
-  {label:"Bedava Bardakta Waffle",   lines:["Bardakta","Waffle"],  weight:7, fill:["#a87425","#7c5216"], text:"#fff",    emoji:"🧇"},
+  {label:"Bedava Sade Kazandibi",    lines:["Sade","Kazandibi"],   weight:2, fill:["#ffffff","#f4ecdc"], text:"#7a531a", emoji:"🍮"},
+  {label:"Bedava Bardakta Waffle",   lines:["Bardakta","Waffle"],  weight:2, fill:["#a87425","#7c5216"], text:"#fff",    emoji:"🧇"},
   {label:"Kasada %10 İndirim",       lines:["%10","İndirim"],      weight:20, fill:["#ffffff","#f4ecdc"], text:"#7a531a", emoji:"🎉"}
 ];
 const N=prizes.length, seg=2*Math.PI/N;
@@ -418,9 +418,35 @@ function genCode(pi){
 }
 /* Bu telefonda bugünkü çevirme kaydı */
 const SK="bd_spin_v2";
-function loadSpin(){ try{ const r=JSON.parse(localStorage.getItem(SK)||"null"); return r&&r.day===dayNo()?r:null; }catch(e){ return null; } }
-function saveSpin(r){ try{ localStorage.setItem(SK,JSON.stringify(r)); }catch(e){} }
+/* Kayıt birden fazla yere yazılır (localStorage + sessionStorage + çerez + IndexedDB + window.name).
+   Biri silinse bile diğerinden geri okunur; böylece "çık-gir" ile tekrar çevirme engellenir. */
+function okRec(r){ return r&&typeof r==="object"&&r.day===dayNo()&&typeof r.i==="number"&&r.code?r:null; }
+function parseRec(t){ try{ return okRec(JSON.parse(t)); }catch(e){ return null; } }
+function getCookie(){ try{ const m=document.cookie.match(new RegExp("(?:^|; )"+SK+"=([^;]*)")); return m?parseRec(decodeURIComponent(m[1])):null; }catch(e){ return null; } }
+function loadSpin(){
+  let r=null;
+  try{ r=r||parseRec(localStorage.getItem(SK)); }catch(e){}
+  try{ r=r||parseRec(sessionStorage.getItem(SK)); }catch(e){}
+  r=r||getCookie();
+  try{ if(!r&&window.name&&window.name.indexOf(SK+"=")===0) r=parseRec(window.name.slice(SK.length+1)); }catch(e){}
+  return r;
+}
+function idb(fn){ try{ const q=indexedDB.open("bd_spin_db",1);
+  q.onupgradeneeded=()=>q.result.createObjectStore("kv");
+  q.onsuccess=()=>{ try{ fn(q.result); }catch(e){} }; }catch(e){} }
+function saveSpin(r){
+  const t=JSON.stringify(r);
+  try{ localStorage.setItem(SK,t); }catch(e){}
+  try{ sessionStorage.setItem(SK,t); }catch(e){}
+  try{ document.cookie=SK+"="+encodeURIComponent(t)+"; max-age=172800; path=/; SameSite=Lax"+(location.protocol==="https:"?"; Secure":""); }catch(e){}
+  try{ window.name=SK+"="+t; }catch(e){}
+  idb(db=>{ db.transaction("kv","readwrite").objectStore("kv").put(t,SK); });
+  try{ navigator.storage&&navigator.storage.persist&&navigator.storage.persist(); }catch(e){}
+}
 let spinRec=loadSpin();
+if(spinRec) saveSpin(spinRec); // eksik kalan yerlere de geri yaz
+else idb(db=>{ const g=db.transaction("kv").objectStore("kv").get(SK);
+  g.onsuccess=()=>{ const r=parseRec(g.result); if(r&&!spinRec){ spinRec=r; saveSpin(r); usedUI(); } }; });
 
 /* Instagram adımı */
 const btn=document.getElementById("spin"); let unlocked=false, followClicked=false;
@@ -445,7 +471,9 @@ let rotation=0, spinning=false;
 const pointer=document.getElementById("pointer");
 function ease(t){ return 1-Math.pow(1-t,4); }
 btn.addEventListener("click",()=>{
-  if(spinning||!unlocked||spinRec) return; ac(); musicLevel(.25); spinning=true; document.getElementById("wheelWrap").classList.add("spinning"); btn.disabled=true; lightMode="spin";
+  if(!spinRec) spinRec=loadSpin();
+  if(spinRec){ usedUI(); return; }
+  if(spinning||!unlocked) return; ac(); musicLevel(.25); spinning=true; document.getElementById("wheelWrap").classList.add("spinning"); btn.disabled=true; lightMode="spin";
   const i=pick(), segDeg=360/N;
   const nd=new Date(); spinRec={day:dayNo(nd),i,code:genCode(i),t:nd.getTime()}; saveSpin(spinRec);
   const target=(360-i*segDeg)%360, jitter=(Math.random()-.5)*segDeg*0.6;
@@ -498,6 +526,11 @@ function usedUI(){
   const a=360-spinRec.i*(360/N); wheel.style.transform=lightsCv.style.transform=`rotate(${a}deg)`;
 }
 document.getElementById("mycode").addEventListener("click",()=>{ if(spinRec) show(spinRec.i,true); });
+/* Sayfaya geri dönüldüğünde / başka sekmede çevrildiyse kilitle */
+function recheck(){ if(spinning) return; const r=loadSpin(); if(r&&!spinRec){ spinRec=r; usedUI(); } }
+addEventListener("pageshow",recheck); addEventListener("focus",recheck);
+addEventListener("storage",e=>{ if(e.key===SK) recheck(); });
+document.addEventListener("visibilitychange",()=>{ if(document.visibilityState==="visible") recheck(); });
 usedUI();
 
 /* Efektler */
